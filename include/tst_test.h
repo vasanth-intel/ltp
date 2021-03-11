@@ -18,6 +18,7 @@
 
 #include "tst_common.h"
 #include "tst_res_flags.h"
+#include "tst_test_macros.h"
 #include "tst_checkpoint.h"
 #include "tst_device.h"
 #include "tst_mkfs.h"
@@ -28,7 +29,6 @@
 #include "tst_process_state.h"
 #include "tst_atomic.h"
 #include "tst_kvercmp.h"
-#include "tst_clone.h"
 #include "tst_kernel.h"
 #include "tst_minmax.h"
 #include "tst_get_bad_addr.h"
@@ -41,6 +41,7 @@
 #include "tst_assert.h"
 #include "tst_cgroup.h"
 #include "tst_lockdown.h"
+#include "tst_fips.h"
 #include "tst_taint.h"
 
 /*
@@ -93,6 +94,7 @@ pid_t safe_fork(const char *filename, unsigned int lineno);
 #include "tst_safe_macros.h"
 #include "tst_safe_file_ops.h"
 #include "tst_safe_net.h"
+#include "tst_clone.h"
 
 /*
  * Wait for all children and exit with TBROK if
@@ -156,6 +158,9 @@ struct tst_test {
 	 * to the test function.
 	 */
 	int all_filesystems:1;
+
+	/* Minimum number of online CPU required by the test */
+	unsigned long min_cpus;
 
 	/*
 	 * If set non-zero number of request_hugepages, test will try to reserve the
@@ -268,33 +273,6 @@ void tst_run_tcases(int argc, char *argv[], struct tst_test *self)
  * The LTP_IPC_PATH variable must be passed to the program environment.
  */
 void tst_reinit(void);
-
-//TODO Clean?
-#define TEST(SCALL) \
-	do { \
-		errno = 0; \
-		TST_RET = SCALL; \
-		TST_ERR = errno; \
-	} while (0)
-
-#define TEST_VOID(SCALL) \
-	do { \
-		errno = 0; \
-		SCALL; \
-		TST_ERR = errno; \
-	} while (0)
-
-extern long TST_RET;
-extern int TST_ERR;
-
-extern void *TST_RET_PTR;
-
-#define TESTPTR(SCALL) \
-	do { \
-		errno = 0; \
-		TST_RET_PTR = (void*)SCALL; \
-		TST_ERR = errno; \
-	} while (0)
 
 /*
  * Functions to convert ERRNO to its name and SIGNAL to its name.

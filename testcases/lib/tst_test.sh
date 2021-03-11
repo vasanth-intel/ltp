@@ -28,8 +28,12 @@ _tst_do_exit()
 	local ret=0
 	TST_DO_EXIT=1
 
-	if [ -n "$TST_CLEANUP" -a -z "$TST_NO_CLEANUP" ]; then
-		$TST_CLEANUP
+	if [ -n "$TST_DO_CLEANUP" -a -n "$TST_CLEANUP" -a -z "$TST_NO_CLEANUP" ]; then
+		if type $TST_CLEANUP >/dev/null 2>/dev/null; then
+			$TST_CLEANUP
+		else
+			tst_res TWARN "TST_CLEANUP=$TST_CLEANUP declared, but function not defined (or cmd not found)"
+		fi
 	fi
 
 	if [ "$TST_NEEDS_DEVICE" = 1 -a "$TST_DEVICE_FLAG" = 1 ]; then
@@ -506,7 +510,7 @@ tst_run()
 			NEEDS_DRIVERS|FS_TYPE|MNTPOINT|MNT_PARAMS);;
 			IPV6|IPVER|TEST_DATA|TEST_DATA_IFS);;
 			RETRY_FUNC|RETRY_FN_EXP_BACKOFF|TIMEOUT);;
-			NET_DATAROOT|NET_MAX_PKT|NET_RHOST_RUN_DEBUG);;
+			NET_DATAROOT|NET_MAX_PKT|NET_RHOST_RUN_DEBUG|NETLOAD_CLN_NUMBER);;
 			*) tst_res TWARN "Reserved variable TST_$_tst_i used!";;
 			esac
 		done
@@ -582,7 +586,12 @@ tst_run()
 	[ -n "$TST_NEEDS_MODULE" ] && tst_require_module "$TST_NEEDS_MODULE"
 
 	if [ -n "$TST_SETUP" ]; then
-		$TST_SETUP
+		if type $TST_SETUP >/dev/null 2>/dev/null; then
+			TST_DO_CLEANUP=1
+			$TST_SETUP
+		else
+			tst_brk TBROK "TST_SETUP=$TST_SETUP declared, but function not defined (or cmd not found)"
+		fi
 	fi
 
 	#TODO check that test reports some results for each test function call
@@ -599,7 +608,6 @@ tst_run()
 		fi
 		TST_ITERATIONS=$((TST_ITERATIONS-1))
 	done
-
 	_tst_do_exit
 }
 
@@ -608,6 +616,7 @@ _tst_run_tests()
 	local _tst_data="$1"
 	local _tst_i
 
+	TST_DO_CLEANUP=1
 	for _tst_i in $(seq ${TST_CNT:-1}); do
 		if type ${TST_TESTFUNC}1 > /dev/null 2>&1; then
 			_tst_run_test "$TST_TESTFUNC$_tst_i" $_tst_i "$_tst_data"
