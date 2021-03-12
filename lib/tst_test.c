@@ -13,6 +13,7 @@
 #include <sys/mount.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 #define TST_NO_DEFAULT_MAIN
 #include "tst_test.h"
@@ -31,6 +32,10 @@
 #include "old_resource.h"
 #include "old_device.h"
 #include "old_tmpdir.h"
+
+//The below macro needs to be defined in the Makefile for Graphene SGX execution,
+//so that the results summary get reported within ltp-sgx.xml for each test.
+//#define SGX_MMAP_PRIVATE
 
 /*
  * Hack to get TCID defined in newlib tests
@@ -72,6 +77,10 @@ static char ipc_path[1064];
 const char *tst_ipc_path = ipc_path;
 
 static char shm_path[1024];
+
+#define TMP_DIR_PATH "/tmp"
+#define LTP_RES_FILE_DIR_PATH "/tmp/ltp"
+static char results_file[256];
 
 int TST_ERR;
 long TST_RET;
@@ -161,6 +170,63 @@ void tst_reinit(void)
 	SAFE_CLOSE(fd);
 }
 
+#ifdef SGX_MMAP_PRIVATE
+static void update_results_in_file(int ttype)
+{
+	FILE *file_ptr = NULL, *file_ptr_w = NULL;
+	struct results tmp_results = {0, 0, 0, 0, 0};
+	unsigned int bytes_read = 0;
+
+	
+	if (access(results_file, F_OK) == -1) {
+		//Should never come here as per design.
+		printf("\nResults file is deleted!! Will not be able to update results.\n");
+		return;
+	}
+
+	if ((file_ptr = fopen(results_file, "rb")) == NULL) {
+		printf("\nUnable to open results file for updating results!\n");
+		return;
+	}
+	
+	bytes_read = fread(&tmp_results, 1, sizeof(struct results), file_ptr);
+
+	if (bytes_read != sizeof(struct results)) {
+		printf("\nUnable to read results from file for updating results!\n");
+		printf("\nBytes read %d Size of struct results %d\n", bytes_read, sizeof(struct results));
+		return;
+	}
+
+	switch (ttype) {
+	case TCONF:
+		tmp_results.skipped++;
+	break;
+	case TPASS:
+		tmp_results.passed++;
+	break;
+	case TWARN:
+		tmp_results.warnings++;
+	break;
+	case TFAIL:
+		tmp_results.failed++;
+	break;
+	}
+	tmp_results.timeout = 0;
+
+	fclose(file_ptr);
+
+	if ((file_ptr_w = fopen(results_file, "wb")) == NULL) {
+		printf("\nUnable to open results file for updating results!\n");
+		return;
+	}
+
+	fwrite(&tmp_results, 1, sizeof(struct results), file_ptr_w);
+
+	fclose(file_ptr_w);
+
+}
+#endif
+
 static void update_results(int ttype)
 {
 	if (!results)
@@ -169,17 +235,38 @@ static void update_results(int ttype)
 	switch (ttype) {
 	case TCONF:
 		tst_atomic_inc(&results->skipped);
+#ifdef SGX_MMAP_PRIVATE
+		if (results->skipped) {
+			update_results_in_file(TTYPE_RESULT(ttype));
+		}
+#endif
 	break;
 	case TPASS:
 		tst_atomic_inc(&results->passed);
+#ifdef SGX_MMAP_PRIVATE
+		if (results->passed) {
+			update_results_in_file(TTYPE_RESULT(ttype));
+		}
+#endif
 	break;
 	case TWARN:
 		tst_atomic_inc(&results->warnings);
+#ifdef SGX_MMAP_PRIVATE
+		if (results->warnings) {
+			update_results_in_file(TTYPE_RESULT(ttype));
+		}
+#endif
 	break;
 	case TFAIL:
 		tst_atomic_inc(&results->failed);
+#ifdef SGX_MMAP_PRIVATE
+		if (results->failed) {
+			update_results_in_file(TTYPE_RESULT(ttype));
+		}
+#endif
 	break;
 	}
+
 }
 
 static void print_result(const char *file, const int lineno, int ttype,
@@ -681,9 +768,57 @@ static void print_failure_hints(void)
 	}
 }
 
+#ifdef SGX_MMAP_PRIVATE
+static void cleanup_results_file(void)
+{
+	struct stat dir_stat;
+	static char del_cmd[256];
+
+	//Check if the "/tmp" directory exists, readable and writable.
+	if (access(TMP_DIR_PATH, F_OK & R_OK & W_OK) == -1) {
+		printf("\nTmp directory not accessible for cleaning results. Exiting!!\n");
+		return;
+	}
+
+	//Check if "/tmp/ltp" directory exists. Return if it doesn't exist, as nothing needs to be cleared.
+	if (stat(LTP_RES_FILE_DIR_PATH, &dir_stat) == -1) {
+		return;
+	}
+
+	//Remove the results file (if present) to avoid displaying stale results.
+	if (access(results_file, F_OK) == 0) {
+		//printf("\nDeleting results file after execution.\n");
+		if (remove(results_file) != 0) {
+			printf("\nUnable to delete results file\n");
+			return;
+		}
+	}
+	
+	//Remove any other residuals (if any) by emptying the directory.
+	if (access(LTP_RES_FILE_DIR_PATH, F_OK & R_OK & W_OK) == 0) {
+		//printf("\nDeleting residuals.\n");
+		snprintf(del_cmd, sizeof(del_cmd), "exec rm -r " LTP_RES_FILE_DIR_PATH "/*");
+		//printf("\nDeleting cmd is %s.\n", del_cmd);
+		system(del_cmd);
+	}
+
+	//Delete "/tmp/ltp" directory.
+	if (access(LTP_RES_FILE_DIR_PATH, F_OK & R_OK & W_OK) == 0) {
+		SAFE_RMDIR(LTP_RES_FILE_DIR_PATH);
+	}
+}
+#endif
+
 static void do_exit(int ret)
 {
 	if (results) {
+
+#ifdef SGX_MMAP_PRIVATE
+		FILE *file_ptr = NULL;
+		struct results tmp_results = {0, 0, 0, 0, 0};
+		unsigned int bytes_read = 0;
+#endif
+
 		if (results->passed && ret == TCONF)
 			ret = 0;
 
@@ -698,11 +833,43 @@ static void do_exit(int ret)
 		if (results->warnings)
 			ret |= TWARN;
 
+#ifdef SGX_MMAP_PRIVATE
+
+		if (access(results_file, F_OK) == 0) {
+			if ((file_ptr = fopen(results_file,"rb")) == NULL) {
+				printf("\nUnable to open results file for displaying results!\n");
+				return;
+			}
+
+			bytes_read = fread(&tmp_results, 1, sizeof(struct results), file_ptr);
+
+			if (bytes_read != sizeof(struct results)) {
+				printf("\nUnable to read results from file for displaying results!\n");
+				printf("\nBytes read %d Size of struct results %d\n", bytes_read, sizeof(struct results));
+				return;
+			}
+			
+			printf("\nSummary:\n");
+			printf("passed   %d\n", tmp_results.passed);
+			printf("failed   %d\n", tmp_results.failed);
+			printf("skipped  %d\n", tmp_results.skipped);
+			printf("warnings %d\n", tmp_results.warnings);
+
+			fclose(file_ptr);
+		}
+		
+		cleanup_results_file();
+
+#else
+
 		printf("\nSummary:\n");
 		printf("passed   %d\n", results->passed);
 		printf("failed   %d\n", results->failed);
 		printf("skipped  %d\n", results->skipped);
 		printf("warnings %d\n", results->warnings);
+
+#endif
+
 	}
 
 	do_cleanup();
@@ -1065,6 +1232,7 @@ static void run_tests(void)
 
 		if (results_equal(&saved_results, results))
 			tst_brk(TBROK, "Test haven't reported results!");
+
 		return;
 	}
 
@@ -1337,6 +1505,61 @@ static int run_tcases_per_fs(void)
 	return ret;
 }
 
+#ifdef SGX_MMAP_PRIVATE
+static int init_results_file(void)
+{
+	struct stat dir_stat;
+	FILE *file_ptr = NULL;
+	struct results tmp_res = {0, 0, 0, 0, 0};
+
+	//Check if the "/tmp" directory exists, readable and writable.
+	if (access(TMP_DIR_PATH, F_OK & R_OK & W_OK) == -1) {
+		printf("\nTmp directory not accessible for capturing results. Exiting!!\n");
+		return -1;
+	}
+
+	//Check if "/tmp/ltp" directory exists. Create one if it doesn't exist.
+	if (stat(LTP_RES_FILE_DIR_PATH, &dir_stat) == -1) {
+		SAFE_MKDIR(LTP_RES_FILE_DIR_PATH, 0777);
+		
+		if (stat(LTP_RES_FILE_DIR_PATH, &dir_stat) == -1) {
+			printf("\nStat: Unable to create /tmp/ltp directory. Exiting!!\n");
+			return -1;
+		}
+		if (access(LTP_RES_FILE_DIR_PATH, F_OK & R_OK & W_OK) == -1) {
+			printf("\nAccess: Unable to create /tmp/ltp directory. Exiting!!\n");
+			return -1;
+		}
+		printf("\nDirectory /tmp/ltp created!!\n");
+	}
+
+	snprintf(results_file, sizeof(results_file), LTP_RES_FILE_DIR_PATH "/test_%s.bin", tid);
+
+	//Remove the results file (if present) to avoid displaying stale results.
+	if (access(results_file, F_OK) == 0) {
+		printf("\nDeleting old results..\n");
+		if (remove(results_file) != 0) {
+			printf("\nUnable to delete results file\n");
+			return -1;
+		}
+	}
+
+	printf("\nResults file name is %s", results_file);
+
+	//Initialize the results file with dummy data for later updation.
+	if ((file_ptr = fopen(results_file, "wb+")) == NULL) {
+		printf("\nUnable to open results file for initializing results!\n");
+		return -1;
+	}
+
+	fwrite(&tmp_res, 1, sizeof(struct results), file_ptr);
+
+	fclose(file_ptr);
+
+	return 0;
+}
+#endif
+
 unsigned int tst_variant;
 
 void tst_run_tcases(int argc, char *argv[], struct tst_test *self)
@@ -1351,6 +1574,12 @@ void tst_run_tcases(int argc, char *argv[], struct tst_test *self)
 
 	TCID = tid;
 
+#ifdef SGX_MMAP_PRIVATE
+	if (-1 == init_results_file()) {
+		printf("\nInit results file function failed somewhere\n");
+		goto exit;
+	}
+#endif
 	SAFE_SIGNAL(SIGALRM, alarm_handler);
 	SAFE_SIGNAL(SIGUSR1, heartbeat_handler);
 
